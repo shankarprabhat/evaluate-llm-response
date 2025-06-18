@@ -2,3 +2,4 @@
 storage/*
 *.pdf
 fastembed_models_cache/*
+*.xlsx
