@@ -10,6 +10,8 @@ from llama_index.core.workflow import Event, Context, Workflow, StartEvent, Stop
 from llama_index.core.schema import NodeWithScore
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext, load_index_from_storage # New imports
 from llama_index.core.response_synthesizers import CompactAndRefine
+from llama_index.core.vector_stores import MetadataFilter, MetadataFilters, FilterOperator, FilterCondition
+from llama_index.core.retrievers import VectorIndexRetriever # Added for explicit retriever creation
 
 # Add model mapping
 MODELS = {
@@ -56,15 +58,22 @@ class RAGWorkflow(Workflow):
         
         # --- MODIFIED: Persistence Logic ---
         if os.path.exists(self.persist_dir) and os.listdir(self.persist_dir):
+        # if False:
             print(f"Loading index from {self.persist_dir}...")
-            # If storage exists, load the index
+            # If storage exists, load the index            
+            # self.index = load_index_from_storage(storage_context)
             storage_context = StorageContext.from_defaults(persist_dir=self.persist_dir)
-            self.index = load_index_from_storage(storage_context)
+            self.index = load_index_from_storage(storage_context=storage_context)
+            # self.index = VectorStoreIndex.from_documents(documents=documents)
+            # self.index.storage_context = StorageContext.from_defaults(persist_dir=self.persist_dir)
             print("Index loaded successfully.")
         else:
             print(f"Creating new index and persisting to {self.persist_dir}...")
             # If no storage, create the index from documents
             documents = SimpleDirectoryReader(dirname).load_data()
+            for doc in documents:
+                # print(f"Document loaded: {doc.metadata.get('file_name', 'Unknown')}")  # Print document filename
+                print(f"Document ID: {doc.id_}, File Name: {doc.metadata.get('file_name')}, File Path: {doc.metadata.get('file_path')}")
             self.index = VectorStoreIndex.from_documents(documents=documents)
             # Persist the index after creation
             self.index.storage_context.persist(persist_dir=self.persist_dir)
@@ -79,6 +88,19 @@ class RAGWorkflow(Workflow):
         """Entry point for RAG retrieval."""
         query = ev.get("query")
         index = ev.get("index") or self.index
+        document_filename = ev.get("document_filename") # get document filename if provided
+        print(f"Query: {query}, Index: {index}, Document Filename: {document_filename}")
+
+        fileters =None
+        if document_filename:
+            # Create a metadata filter to match the document filename
+            fileters = MetadataFilters(
+                filters=[MetadataFilter(key="file_name",value=document_filename,operator=FilterOperator.IN, case_sensitive=False)     
+            ],
+            condition = FilterCondition.AND           
+            )
+            print(f"Using metadata filter for document: {document_filename}")
+            print(f"Filters: {fileters}")
 
         if not query:
             return None
@@ -86,8 +108,11 @@ class RAGWorkflow(Workflow):
         if index is None:
             print("Index is empty, load some documents before querying!")
             return None
+        
+        retriever = VectorIndexRetriever(index=index, filters=fileters)  # Use explicit retriever creation
+        # retriever = VectorIndexRetriever(index=index)  # Use explicit retriever creation
 
-        retriever = index.as_retriever(similarity_top_k=2)
+        # retriever = index.as_retriever(similarity_top_k=2)
         nodes = await retriever.aretrieve(query)
         await ctx.set("query", query)
         return RetrieverEvent(nodes=nodes)
@@ -95,17 +120,17 @@ class RAGWorkflow(Workflow):
     @step
     async def synthesize(self, ctx: Context, ev: RetrieverEvent) -> StopEvent:
         """Generate a response using retrieved nodes."""
-        summarizer = CompactAndRefine(streaming=True, verbose=True)
+        summarizer = CompactAndRefine(streaming=True, verbose=True, llm=self.llm)
         query = await ctx.get("query", default=None)
         response = await summarizer.asynthesize(query, nodes=ev.nodes)
         return StopEvent(result=response)
 
-    async def query(self, query_text: str):
+    async def query(self, query_text: str, document_filename: str = None):
         """Helper method to perform a complete RAG query."""
         if self.index is None:
             raise ValueError("No documents have been ingested. Call ingest_documents first.")
         
-        result = await self.run(query=query_text, index=self.index)
+        result = await self.run(query=query_text, index=self.index, document_filename=document_filename)
         return result
 
     async def ingest_documents(self, directory: str):
@@ -129,6 +154,9 @@ async def main(run_config):
     question_list = question_list     #[:2]  # Limit to first 2 questions for testing
     ground_truth_list = ground_truth_list  #[:2]  # Limit to first 2 answers for testing
 
+    question_list = question_list[:2]  # Limit to first 2 questions for testing
+    ground_truth_list = ground_truth_list[:2]  # Limit to first 2 answers for testing
+
     # List to store dictionaries of questions and responses
     qa_pairs = [] 
     
@@ -143,9 +171,15 @@ async def main(run_config):
     for question in question_list:
         print(f"\n{count}--- Query: {question} ---")
         count += 1
-        tic = time.time()
+        
         try:
-            result = await workflow.query(question)
+
+            tic = time.time()
+
+            specific_document = None
+            specific_document = run_config.get("source_file", None)
+            print(f"Specific document for query: {specific_document}")
+            result = await workflow.query(question,document_filename=specific_document)
             
             # Print the response
             full_response_text = ""        
@@ -158,13 +192,23 @@ async def main(run_config):
             
             # Extract retrieved contexts (text content only)
             retrieved_contexts = [node.text for node in result.source_nodes]
+            retrieved_filenames = [node.metadata.get("file_name", "Unknown") for node in result.source_nodes]
+            # print(f"retrieved_contexts: {retrieved_contexts}")
+            print(f"retrieved_filenames: {retrieved_filenames}")
+            # Get unique filenames and convert to a list
+            unique_retrieved_filenames = list(set(retrieved_filenames))
+            print(f"Retrieved from: {', '.join(unique_retrieved_filenames)}") # For console output
+
+            toc = time.time()
 
             # Add the question and full response to our list
             qa_pairs.append({
                 "Question": question,
                 "Ground_truth": ground_truth_list[count-2],
                 "Response": full_response_text,
-                "Contexts": retrieved_contexts            
+                "Contexts": retrieved_contexts,
+                "Retrieved_Files": unique_retrieved_filenames,
+                "time_taken": round(toc - tic,2)
             })
         except Exception as e:
                 print(f"Error processing question '{question}': {e}")
@@ -172,11 +216,12 @@ async def main(run_config):
                     "Question": question,
                     "Ground_truth": ground_truth_list[count-2] if count-2 < len(ground_truth_list) else "",
                     "Response": "Error processing question",
-                    "Contexts": []
+                    "Contexts": [],
+                    "Retrieved_Files": [],
+                    "time_taken": 0
                 })  
 
-        toc = time.time()
-        print(f"time taken: {toc-tic} seconds")    
+        print(f"time taken: {toc-tic} seconds")
     # Create the DataFrame
     qa_df = pd.DataFrame(qa_pairs)
     
@@ -192,16 +237,24 @@ if __name__ == "__main__":
     import asyncio
 
     model_name = ["qwen3:0.6b","gemma3:1b","deepseek-r1:1.5b"]
+    model_name = ["qwen3:0.6b"]
     # model_name = ["gemma3:1b"]
     # model_name = ["deepseek-r1:1.5b"]
     embedding_model = "BAAI/bge-large-en-v1.5"  # Example embedding model
     data_sheet = ["21CFR Part 50","21CFR Part 56","21CFR Part 58","NITLT01","AZD9291","ICH GCP E6 R3"]
-    source_file = ["21CFR Part 50.pdf","21CFR Part 56.pdf","21CFR Part 58.pdf","NITL01.pdf","AZD9291.pdf"]
+    source_file = ["21 CFR Part 50.pdf","21 CFR Part 56.pdf","21 CFR Part 58.pdf","NITLT01.pdf","AZD9291.pdf","ich-gcp-r3.pdf"]
+
+    data_sheet = ["21CFR Part 50"]
+    source_file = ["21 CFR Part 50.pdf"]
+
+    data_sheet = ["NITLT01"]
+    source_file = ["NITLT01.pdf"]
     
     run_config = {
         "model_name": "qwen",
         "sheet_name": "sheet",
-        "embedding_model": embedding_model
+        "embedding_model": embedding_model,
+        "source_file": source_file
     }
     
     # Read the source file for question and answer pairs
