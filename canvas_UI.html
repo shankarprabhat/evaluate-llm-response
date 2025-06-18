@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple RAG Prototype</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8;
+        }
+        .container {
+            max-width: 900px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        textarea, input[type="text"] {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 10px 15px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            background-color: #4f46e5;
+            color: white;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        button:hover {
+            background-color: #4338ca;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+        button:disabled {
+            background-color: #9ca3af;
+            cursor: not-allowed;
+        }
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 10px;
+        }
+        .output-box {
+            background-color: #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 80px;
+            white-space: pre-wrap; /* Preserve whitespace and line breaks */
+            word-wrap: break-word; /* Break long words */
+            font-family: monospace;
+            color: #334155;
+            line-height: 1.5;
+            overflow-x: auto; /* Enable horizontal scrolling for long lines */
+        }
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="container">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Simple RAG Prototype</h1>
+
+        <!-- Ingest Documents Section -->
+        <div class="mb-8 p-6 bg-blue-50 rounded-lg">
+            <div class="section-title">1. Ingest Documents</div>
+            <textarea id="documentsInput" rows="10" placeholder="Enter your documents here. Each double newline will be considered a separate document chunk (e.g., paragraph).&#10;&#10;Example Document 1. This is the first paragraph of a document. It contains some information about topic A.&#10;&#10;Example Document 2. This is the second paragraph. It talks about topic B and is quite distinct.&#10;&#10;Example Document 3. Topic A is further elaborated here. This paragraph has details relevant to the first document."></textarea>
+            <button id="ingestBtn" class="mt-4 w-full">Ingest Documents</button>
+            <div id="ingestStatus" class="mt-2 text-sm text-center text-gray-600"></div>
+        </div>
+
+        <!-- Query Section -->
+        <div class="mb-8 p-6 bg-green-50 rounded-lg">
+            <div class="section-title">2. Ask a Question</div>
+            <input type="text" id="queryInput" placeholder="Enter your question here..." class="mb-4" disabled>
+            <button id="queryBtn" class="w-full" disabled>Ask LLM</button>
+            <div id="queryStatus" class="mt-2 text-sm text-center text-gray-600"></div>
+            <div id="queryLoading" class="hidden loading-spinner mt-4"></div>
+        </div>
+
+        <!-- Retrieved Context Section -->
+        <div class="mb-8 p-6 bg-yellow-50 rounded-lg">
+            <div class="section-title">3. Retrieved Context</div>
+            <div id="retrievedContext" class="output-box">No context retrieved yet.</div>
+        </div>
+
+        <!-- LLM Response Section -->
+        <div class="p-6 bg-red-50 rounded-lg">
+            <div class="section-title">4. LLM Response</div>
+            <div id="llmResponse" class="output-box">Awaiting query...</div>
+        </div>
+    </div>
+
+    <script>
+        let documents = []; // Stores processed document chunks with mock embeddings
+
+        const documentsInput = document.getElementById('documentsInput');
+        const ingestBtn = document.getElementById('ingestBtn');
+        const ingestStatus = document.getElementById('ingestStatus');
+        const queryInput = document.getElementById('queryInput');
+        const queryBtn = document.getElementById('queryBtn');
+        const queryStatus = document.getElementById('queryStatus');
+        const queryLoading = document.getElementById('queryLoading');
+        const retrievedContextDiv = document.getElementById('retrievedContext');
+        const llmResponseDiv = document.getElementById('llmResponse');
+
+        // Function to simulate embedding generation
+        // In a real app, this would be a call to an embedding model API or client-side model
+        function generateMockEmbedding(text) {
+            // Simple hash-based mock embedding for demonstration
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                const char = text.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash |= 0; // Convert to 32bit integer
+            }
+            // Return a fixed-size "vector" based on the hash for mock similarity
+            return Array.from({ length: 4 }, (_, i) => (hash % (i + 5)) / 100);
+        }
+
+        // --- Ingest Documents Logic ---
+        ingestBtn.addEventListener('click', () => {
+            const rawText = documentsInput.value.trim();
+            if (!rawText) {
+                ingestStatus.textContent = "Please enter some documents.";
+                ingestStatus.style.color = 'red';
+                return;
+            }
+
+            documents = []; // Clear previous documents
+            const rawChunks = rawText.split(/\n\s*\n/); // Split by double newline for paragraphs
+
+            rawChunks.forEach((chunk, index) => {
+                if (chunk.trim()) {
+                    documents.push({
+                        id: `doc_chunk_${index}`,
+                        text: chunk.trim(),
+                        embedding: generateMockEmbedding(chunk.trim()) // Simulate embedding
+                    });
+                }
+            });
+
+            ingestStatus.textContent = `Ingested ${documents.length} document chunks.`;
+            ingestStatus.style.color = 'green';
+            queryInput.disabled = false;
+            queryBtn.disabled = false;
+            retrievedContextDiv.textContent = "No context retrieved yet.";
+            llmResponseDiv.textContent = "Awaiting query...";
+            console.log("Ingested documents:", documents);
+        });
+
+        // --- Query Logic ---
+        queryBtn.addEventListener('click', async () => {
+            const queryText = queryInput.value.trim();
+            if (!queryText) {
+                queryStatus.textContent = "Please enter a question.";
+                queryStatus.style.color = 'red';
+                return;
+            }
+            if (documents.length === 0) {
+                queryStatus.textContent = "No documents ingested. Please ingest documents first.";
+                queryStatus.style.color = 'red';
+                return;
+            }
+
+            queryStatus.textContent = "";
+            llmResponseDiv.textContent = "Generating response...";
+            retrievedContextDiv.textContent = "Retrieving context...";
+            queryBtn.disabled = true;
+            queryInput.disabled = true;
+            queryLoading.classList.remove('hidden');
+
+            // 1. Simulate Retrieval (mock similarity search)
+            const queryEmbedding = generateMockEmbedding(queryText);
+            
+            // In a real RAG, you'd use a vector search algorithm (e.g., cosine similarity)
+            // against the document embeddings. For this prototype, we'll just pick some
+            // 'relevant' documents based on a very simple mock logic or random selection.
+            const relevantDocs = [];
+            // Simple mock: if query matches content, add it. Otherwise, randomly pick.
+            const matchingDocs = documents.filter(doc => doc.text.toLowerCase().includes(queryText.toLowerCase()));
+            if (matchingDocs.length > 0) {
+                relevantDocs.push(...matchingDocs.slice(0, 2)); // Take up to 2 direct matches
+            }
+
+            // Fill up with some random docs if not enough direct matches
+            while (relevantDocs.length < 2 && documents.length > relevantDocs.length) {
+                const randomDoc = documents[Math.floor(Math.random() * documents.length)];
+                if (!relevantDocs.includes(randomDoc)) {
+                    relevantDocs.push(randomDoc);
+                }
+            }
+            
+            let contextText = relevantDocs.map(doc => doc.text).join("\n\n---\n\n");
+            if (!contextText) {
+                contextText = "No highly relevant context found, generating based on general knowledge.";
+            }
+
+            retrievedContextDiv.textContent = contextText;
+            console.log("Retrieved contexts:", relevantDocs);
+
+            // 2. Simulate LLM Response Generation
+            // In a real RAG, this would be a fetch call to an LLM API (e.g., Ollama, OpenAI)
+            const simulatedLLMResponse = await simulateLLMResponse(queryText, contextText);
+
+            llmResponseDiv.textContent = simulatedLLMResponse;
+            queryBtn.disabled = false;
+            queryInput.disabled = false;
+            queryLoading.classList.add('hidden');
+            queryStatus.textContent = "Response generated!";
+            queryStatus.style.color = 'green';
+        });
+
+        // --- Simulated LLM Response Function ---
+        async function simulateLLMResponse(query, context) {
+            llmResponseDiv.textContent = "Thinking..."; // Show immediate feedback
+            return new Promise(resolve => {
+                let responseContent = "";
+                const baseResponse = "Based on the provided information, I can tell you that: ";
+                
+                // A very simple "LLM" that tries to answer based on query and context
+                if (context.includes("DeepSeek-R1 is a large language model trained by DeepSeek AI.")) {
+                    responseContent += "DeepSeek-R1 is a large language model developed by DeepSeek AI, primarily focusing on reasoning tasks. ";
+                }
+                if (context.includes("Its training involved a massive dataset of text and code.")) {
+                    responseContent += "Its training utilized a massive dataset comprising both text and code. ";
+                }
+                if (query.toLowerCase().includes("purpose of deepseek-r1")) {
+                    responseContent += "Its main purpose is to handle reasoning tasks effectively.";
+                } else if (query.toLowerCase().includes("how was deepseek-r1 trained")) {
+                    responseContent += "It was trained on a large dataset of text and code.";
+                } else if (query.toLowerCase().includes("qwen")) {
+                    responseContent += "Qwen is an LLM series by Alibaba Cloud.";
+                } else if (query.toLowerCase().includes("llamaindex")) {
+                    responseContent += "LlamaIndex is a data framework for LLM applications.";
+                } else {
+                    responseContent += "I processed your query and retrieved some context. This is a simplified RAG demonstration. In a real application, a powerful LLM would synthesize a more detailed answer from the retrieved context. Your query was: '" + query + "'.";
+                }
+
+                // Simulate streaming
+                let i = 0;
+                const interval = setInterval(() => {
+                    if (i < responseContent.length) {
+                        llmResponseDiv.textContent += responseContent[i];
+                        i++;
+                        llmResponseDiv.scrollTop = llmResponseDiv.scrollHeight; // Auto-scroll
+                    } else {
+                        clearInterval(interval);
+                        resolve(llmResponseDiv.textContent); // Resolve with final accumulated text
+                    }
+                }, 20); // Adjust speed of typing here
+            });
+        }
+
+        // Initial state
+        queryInput.disabled = true;
+        queryBtn.disabled = true;
+        documentsInput.value = "DeepSeek-R1 is a large language model trained by DeepSeek AI. It focuses on reasoning tasks.\n\nIts training involved a massive dataset of text and code.\n\nQwen is a series of large language models developed by Alibaba Cloud. Qwen3 is one of its versions.\n\nLlamaIndex is a data framework for LLM applications. It helps connect custom data sources to LLMs for enhanced knowledge.";
+        ingestBtn.click(); // Auto-ingest default documents
+    </script>
+</body>
+</html>
