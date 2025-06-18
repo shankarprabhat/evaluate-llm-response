@@ -1,11 +1,2 @@
-Pull Ollama models
-
-```
-ollama pull <model_name>
-```
-
-List Ollama models
-
-```
-ollama list
-```
+# evaluate-llm-response
+Generate the response from multiple LLMs and evaluate their response
