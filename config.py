@@ -1,0 +1,1 @@
+llm_choice = "local_ollama"  #"local_ollama" #hugging-face-qwen #hugging-face-qwen-small
