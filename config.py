@@ -1,1 +1,1 @@
-llm_choice = "local_ollama"  #"local_ollama" #hugging-face-qwen #hugging-face-qwen-small
+llm_choice = "hugging-face-phi4"  #"local_ollama" #hugging-face-qwen #hugging-face-qwen-small  #hugging-face-phi4
